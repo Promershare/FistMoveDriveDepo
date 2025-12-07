@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drive Toplu Görsel Yükleyici v2</title>
+    <title>Drive Toplu Görsel Yükleyici v2.3</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js" 
             crossorigin="anonymous" 
@@ -151,7 +151,7 @@
                 <h1 class="text-3xl md:text-4xl font-bold text-white">
                     📁 Drive Toplu Yükleyici
                 </h1>
-                <span class="bg-indigo-500/30 text-indigo-300 text-xs font-medium px-2 py-1 rounded-full">v2.2</span>
+                <span class="bg-indigo-500/30 text-indigo-300 text-xs font-medium px-2 py-1 rounded-full">v2.3</span>
             </div>
             <p class="text-gray-400 text-sm">
                 JPG, PNG ve HEIC dosyalarını optimize edip Google Drive'a yükleyin
@@ -163,7 +163,7 @@
             <!-- Webhook URL -->
             <div class="mb-6">
                 <label class="block text-gray-300 text-sm font-medium mb-2">
-                    API Bağlantı Adresi
+                    API Bağlantı Adresi (n8n Webhook)
                 </label>
                 <input type="url" id="webhookUrl" 
                        placeholder="https://api.example.com/upload"
@@ -347,12 +347,24 @@
             return Math.random().toString(36).substr(2, 9);
         }
 
+        /**
+         * Dosya nesnesindeki status'u günceller.
+         * @param {string} id 
+         * @param {string} newStatus 'waiting', 'processing', 'uploading', 'success', 'error'
+         */
+        function updateFileState(id, newStatus, message = '') {
+            const fileObj = selectedFiles.find(f => f.id === id);
+            if (fileObj) {
+                fileObj.status = newStatus;
+                updateFileStatusUI(id, newStatus, message);
+            }
+        }
+
         // ============================================
         // Progress & Auto-Scroll Functions
         // ============================================
-        function updateProgress(current, total, success, errors) {
+        function updateProgress(current, total, success, errors, remaining) {
             const percent = total > 0 ? Math.round((current / total) * 100) : 0;
-            const remaining = total - current;
             
             progressBar.style.width = percent + '%';
             progressText.textContent = `${current} / ${total}`;
@@ -438,9 +450,12 @@
                         ctx.imageSmoothingQuality = 'high';
                         ctx.drawImage(img, 0, 0, width, height);
                         
-                        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+                        // toDataURL()'den önce canvas'a çizim yapılmalı
+                        // HEIC dosyaları burada JPG olarak dönüştürülmüş oluyor
+                        const dataUrl = canvas.toDataURL('image/jpeg', quality); 
                         const base64 = dataUrl.split(',')[1];
-                        const optimizedSize = Math.round(base64.length * 0.75);
+                        // Base64 boyutu yaklaşık olarak hesaplanıyor (byte'a dönüşüm)
+                        const optimizedSize = Math.round(base64.length * 0.75); 
                         
                         resolve({
                             base64: base64,
@@ -453,7 +468,7 @@
                     }
                 };
                 
-                img.onerror = () => reject(new Error('Görsel yüklenemedi'));
+                img.onerror = () => reject(new Error('Görsel yüklenemedi veya desteklenmiyor.'));
                 
                 // Blob'dan URL oluştur
                 const url = URL.createObjectURL(file);
@@ -490,13 +505,28 @@
             fileCountSpan.textContent = count;
             fileListContainer.classList.toggle('hidden', count === 0);
             
+            // Durumları say
+            const successCount = selectedFiles.filter(f => f.status === 'success').length;
+            const errorCount = selectedFiles.filter(f => f.status === 'error').length;
+            const totalToProcess = selectedFiles.length - successCount;
+            
+            // Buton metnini ve durumunu güncelle
             if (count === 0) {
                 uploadBtn.disabled = true;
                 uploadBtnText.textContent = 'Dosya Seçin';
-            } else {
+            } else if (totalToProcess === 0 && successCount > 0) {
+                 uploadBtn.disabled = true;
+                 uploadBtnText.innerHTML = '✅ Tüm Dosyalar Yüklendi!';
+            } else if (totalToProcess > 0) {
                 uploadBtn.disabled = false;
-                uploadBtnText.textContent = `⬆️ ${count} Dosyayı Yükle`;
+                uploadBtnText.textContent = `⬆️ ${totalToProcess} Dosyayı Yükle / Tekrar Dene`;
+            } else {
+                 uploadBtn.disabled = false;
+                 uploadBtnText.textContent = `⬆️ ${count} Dosyayı Yükle`;
             }
+
+             // Başarılı dosya varsa "Başarılıları Kaldır" butonunu göster
+            clearSuccessBtn.classList.toggle('hidden', successCount === 0);
         }
 
         function createFileCard(fileObj, index) {
@@ -531,7 +561,10 @@
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     const thumb = div.querySelector('.thumbnail');
-                    thumb.innerHTML = `<img src="${e.target.result}" class="thumbnail">`;
+                    // Mevcut içeriği temizlemeden önce kontrol
+                    if (thumb && thumb.children.length === 0) {
+                        thumb.innerHTML = `<img src="${e.target.result}" class="thumbnail">`;
+                    }
                 };
                 reader.readAsDataURL(fileObj.file);
             }
@@ -541,6 +574,8 @@
                 selectedFiles = selectedFiles.filter(f => f.id !== fileObj.id);
                 div.remove();
                 updateUI();
+                // Yükleme sırasında silinirse progress'i de güncellemek gerekebilir, 
+                // ancak şimdilik sadece UI/state güncelleyelim.
             });
             
             return div;
@@ -554,7 +589,7 @@
             updateUI();
         }
 
-        function updateFileStatus(id, status, message = '') {
+        function updateFileStatusUI(id, status, message = '') {
             const statusEl = document.getElementById(`status-${id}`);
             const infoEl = document.getElementById(`info-${id}`);
             const cardEl = document.getElementById(`file-${id}`);
@@ -586,26 +621,31 @@
                 if (status === 'processing' || status === 'uploading') cardEl.classList.add('processing');
             }
             
-            if (infoEl && message) {
+            if (infoEl) {
                 infoEl.textContent = message;
                 infoEl.className = `text-xs mt-1 ${status === 'success' ? 'text-green-400' : status === 'error' ? 'text-red-400' : 'text-gray-500'}`;
             }
         }
 
         // ============================================
-        // Upload Logic
+        // Upload Logic - YENİDEN DENEME MANTIĞI EKLENDİ
         // ============================================
         async function uploadFiles() {
             const webhookUrl = webhookInput.value.trim();
             const folderName = folderInput.value.trim();
             
             if (!webhookUrl) {
-                alert('Lütfen webhook URL girin!');
+                log('Lütfen n8n Webhook URL girin!', 'error');
+                // Alternatif olarak, kullanıcıya bir modal/uyarı gösterebilirsiniz.
                 return;
             }
             
-            if (selectedFiles.length === 0) {
-                alert('Lütfen dosya seçin!');
+            // Sadece 'waiting' veya 'error' durumundaki dosyaları yüklemek için filtrele
+            const filesToUpload = selectedFiles.filter(f => f.status === 'waiting' || f.status === 'error');
+
+            if (filesToUpload.length === 0) {
+                log('Yüklenecek bekleyen veya hatalı dosya bulunamadı.', 'warning');
+                updateUI();
                 return;
             }
             
@@ -615,24 +655,28 @@
             
             // Progress göster
             progressContainer.classList.remove('hidden');
-            const totalFiles = selectedFiles.length;
-            let currentIndex = 0;
-            let successCount = 0;
-            let errorCount = 0;
             
-            updateProgress(0, totalFiles, 0, 0);
+            const totalFilesToProcess = filesToUpload.length;
+            let currentFileIndex = 0;
             
-            log('Yükleme başlatıldı...', 'info');
+            // Tüm dosyaların durumunu say
+            let totalSuccess = selectedFiles.filter(f => f.status === 'success').length;
+            let totalError = selectedFiles.filter(f => f.status === 'error').length;
+            let totalRemaining = totalFilesToProcess;
+
+            // İlk progress güncellemesi (tüm dosyaların toplam durumu)
+            updateProgress(currentFileIndex, totalFilesToProcess, totalSuccess, totalError, totalRemaining);
             
-            for (const fileObj of selectedFiles) {
-                currentIndex++;
+            log(`Yükleme başlatıldı (Toplam İşlenecek: ${totalFilesToProcess})`, 'info');
+            
+            for (const fileObj of filesToUpload) {
                 
-                // Auto-scroll: İşlenen dosyayı görünür yap
+                // Yükleme başlamadan önce durumu tekrar 'processing' olarak ayarla
+                updateFileState(fileObj.id, 'processing', 'Yeniden Deneniyor...'); 
                 scrollToFile(fileObj.id);
                 
                 try {
                     // İşleme durumu
-                    updateFileStatus(fileObj.id, 'processing', 'Optimize ediliyor...');
                     log(`İşleniyor: ${fileObj.file.name}`, 'info');
                     
                     // Dosyayı işle (HEIC dönüşüm + optimizasyon)
@@ -641,7 +685,7 @@
                     const savedBytes = processed.originalSize - processed.optimizedSize;
                     const savedPercent = Math.round((savedBytes / processed.originalSize) * 100);
                     
-                    updateFileStatus(fileObj.id, 'uploading', `Optimize: ${formatBytes(processed.optimizedSize)} (${savedPercent}% tasarruf)`);
+                    updateFileState(fileObj.id, 'uploading', `Optimize: ${formatBytes(processed.optimizedSize)} (${savedPercent}% tasarruf)`);
                     
                     // Payload hazırla
                     const payload = {
@@ -666,36 +710,52 @@
                         body: JSON.stringify(payload)
                     });
                     
-                    log(`Response status: ${response.status}`, 'info');
-                    
                     // Response'u parse et
                     let result;
-                    const responseText = await response.text();
-                    log(`Response body: ${responseText.substring(0, 200)}`, 'info');
+                    let responseText = '';
                     
                     try {
+                        responseText = await response.text();
                         result = JSON.parse(responseText);
                     } catch (e) {
-                        result = { raw: responseText };
+                         // Eğer n8n'den gelen yanıt JSON değilse (örneğin HTTP 500'de boş/metin olabilir)
+                        result = { error: responseText || `HTTP Hata Kodu: ${response.status}` };
                     }
                     
-                    // Başarı kontrolü
-                    if (response.ok && (result.status === 'success' || result.uploadedFileId || result.fileId || response.status === 200)) {
-                        updateFileStatus(fileObj.id, 'success', `✅ Yüklendi • ${formatBytes(processed.optimizedSize)}`);
+                    log(`Response status: ${response.status}`, 'info');
+                    log(`Response body (kısmi): ${responseText.substring(0, 200)}`, 'info');
+                    
+                    // Başarı kontrolü (HTTP 200/201 VE içerik başarı gösteriyorsa)
+                    if (response.ok && response.status < 400) { 
+                        updateFileState(fileObj.id, 'success', `✅ Yüklendi • ${formatBytes(processed.optimizedSize)}`);
                         log(`Başarılı: ${fileObj.file.name}`, 'success');
-                        successCount++;
+                        totalSuccess++;
+                        // Hata vermiş bir dosya başarılı olursa, toplam hatadan düş
+                        if (fileObj.status === 'error') totalError--; 
                     } else {
-                        throw new Error(result.error || result.message || `HTTP ${response.status}`);
+                        // n8n'den gelen 400/500 yanıtları, veya n8n içindeki hata yanıtı buraya düşer
+                        const errMsg = result.message || result.error || `n8n Hata: ${result.raw || response.statusText}`;
+                        throw new Error(errMsg);
                     }
                     
                 } catch (error) {
-                    updateFileStatus(fileObj.id, 'error', `❌ ${error.message}`);
+                    const errMsg = error.message.includes('HTTP') ? error.message : `API/Zaman Aşımı: ${error.message}`;
+                    updateFileState(fileObj.id, 'error', `❌ ${errMsg.substring(0, 80)}...`);
                     log(`Hata (${fileObj.file.name}): ${error.message}`, 'error');
-                    errorCount++;
+                    
+                    // Dosya daha önce 'error' durumunda değilse (yani ilk kez başarısız oluyorsa), hatayı artır
+                    if (fileObj.status !== 'error') {
+                         totalError++;
+                    }
                 }
                 
+                // İşlenen dosyalar sayısını artır
+                currentFileIndex++;
+                totalRemaining = totalFilesToProcess - currentFileIndex;
+                
                 // Progress güncelle
-                updateProgress(currentIndex, totalFiles, successCount, errorCount);
+                // NOT: totalSuccess ve totalError, tüm listedeki güncel durumları gösterir.
+                updateProgress(currentFileIndex, totalFilesToProcess, totalSuccess, totalError, totalRemaining);
                 
                 // Küçük bekleme (rate limiting için)
                 await new Promise(r => setTimeout(r, 300));
@@ -704,31 +764,15 @@
             // Sonuç
             isUploading = false;
             
-            const totalMsg = `Tamamlandı: ${successCount} başarılı, ${errorCount} hatalı`;
-            log(totalMsg, errorCount > 0 ? 'warning' : 'success');
-            
-            // Başarılı dosya varsa "Başarılıları Kaldır" butonunu göster
-            if (successCount > 0) {
-                clearSuccessBtn.classList.remove('hidden');
-            }
+            // Tüm dosyaların son durumunu al
+            const finalSuccessCount = selectedFiles.filter(f => f.status === 'success').length;
+            const finalErrorCount = selectedFiles.filter(f => f.status === 'error').length;
+
+            const totalMsg = `Tüm İşlemler Tamamlandı: ${finalSuccessCount} başarılı, ${finalErrorCount} hatalı`;
+            log(totalMsg, finalErrorCount > 0 ? 'warning' : 'success');
             
             // Buton durumunu güncelle
-            if (errorCount === 0 && successCount > 0) {
-                // Tümü başarılı
-                uploadBtnText.innerHTML = '✅ Tüm Dosyalar Yüklendi!';
-                uploadBtn.disabled = true;
-            } else if (errorCount > 0 && successCount > 0) {
-                // Karışık sonuç
-                uploadBtnText.innerHTML = `⚠️ ${successCount} Başarılı, ${errorCount} Hatalı - Tekrar Dene`;
-                uploadBtn.disabled = false;
-            } else if (errorCount > 0 && successCount === 0) {
-                // Tümü hatalı
-                uploadBtnText.innerHTML = `❌ ${errorCount} Dosya Yüklenemedi - Tekrar Dene`;
-                uploadBtn.disabled = false;
-            }
-            
-            // NOT: Dosyaları otomatik silmiyoruz - kullanıcı "Tümünü Temizle" ile siler
-            // Sadece başarılı olanları işaretle, listede kalsın
+            updateUI(); 
         }
 
         // ============================================
@@ -781,7 +825,8 @@
                 );
                 
                 if (!exists) {
-                    selectedFiles.push({ id, file, status: 'waiting' });
+                    // Dosyayı 'waiting' (bekliyor) durumuyla ekle
+                    selectedFiles.push({ id, file, status: 'waiting' }); 
                     log(`Eklendi: ${file.name} (${formatBytes(file.size)})`, 'info');
                 }
             });
@@ -806,6 +851,7 @@
         
         // Clear All
         clearAllBtn.addEventListener('click', () => {
+            // NOTE: Custom modal UI kullanılıyor
             if (!isUploading && confirm('Tüm dosyaları temizlemek istediğinize emin misiniz?')) {
                 resetUploader();
                 log('Liste temizlendi', 'info');
@@ -816,16 +862,21 @@
         clearSuccessBtn.addEventListener('click', () => {
             if (!isUploading) {
                 // Sadece başarılı dosyaları kaldır
-                selectedFiles = selectedFiles.filter(f => {
-                    const statusEl = document.getElementById(`status-${f.id}`);
-                    return statusEl && !statusEl.textContent.includes('Başarılı');
-                });
+                selectedFiles = selectedFiles.filter(f => f.status !== 'success');
                 renderFileList();
                 clearSuccessBtn.classList.add('hidden');
                 
                 if (selectedFiles.length > 0) {
-                    uploadBtnText.textContent = `⬆️ ${selectedFiles.length} Dosyayı Tekrar Dene`;
-                    uploadBtn.disabled = false;
+                    const remainingErrors = selectedFiles.filter(f => f.status === 'error').length;
+                    const remainingWaiting = selectedFiles.filter(f => f.status === 'waiting').length;
+                    
+                    if (remainingErrors > 0 || remainingWaiting > 0) {
+                         uploadBtn.disabled = false;
+                         uploadBtnText.textContent = `⬆️ ${remainingErrors + remainingWaiting} Dosyayı Tekrar Dene`;
+                    } else {
+                         uploadBtn.disabled = true;
+                         uploadBtnText.textContent = 'Dosya Seçin';
+                    }
                 } else {
                     resetUploader();
                 }
@@ -857,13 +908,11 @@
         // ============================================
         window.addEventListener('load', () => {
             setTimeout(() => {
-                console.log('heic2any check:', typeof heic2any);
                 if (typeof heic2any !== 'undefined') {
                     log('✅ HEIC desteği aktif', 'success');
                 } else {
-                    log('⚠️ HEIC kütüphanesi yüklenemedi!', 'error');
-                    log('💡 Çözüm: HTML dosyasını bir web sunucusu üzerinden açın', 'warning');
-                    log('   veya HEIC dosyalarını önce JPG\'ye çevirin', 'warning');
+                    log('⚠️ HEIC kütüphanesi yüklenemedi! (Cross-Origin Sorunu)', 'error');
+                    log('💡 Çözüm: HTML dosyasını bir web sunucusu üzerinden açın veya HEIC dosyalarını önce JPG\'ye çevirin.', 'warning');
                 }
                 log('Uygulama hazır. Dosya seçin veya sürükleyin.', 'info');
             }, 500);
